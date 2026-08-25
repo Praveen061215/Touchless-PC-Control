@@ -1,6 +1,6 @@
 # 🖐️ Touchless PC Control
 
-Control your PC entirely with hand gestures using your webcam — no physical contact required.
+A Python-based virtual mouse that lets you control your PC using hand gestures. Features cursor movement, left/right clicks, dragging, scrolling, volume adjustment, and window shortcuts via your webcam using OpenCV and MediaPipe.
 
 Built with **Python**, **OpenCV**, **MediaPipe Tasks API (v1.0+)**, and **PyAutoGUI**.
 
