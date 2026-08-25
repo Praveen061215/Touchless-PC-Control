@@ -93,3 +93,6 @@ Open `VirtualMouse.py` and adjust these constants at the top:
 
 ## Contact
 Created by Praveen. Feel free to reach out for any questions.
+
+## License
+This project is licensed under the MIT License.
