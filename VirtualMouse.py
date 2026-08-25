@@ -24,6 +24,7 @@ Touchless PC Control — 13-gesture suite
 """
 
 import cv2
+import logging
 import math
 import time
 import numpy as np
