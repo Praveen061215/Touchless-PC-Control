@@ -1,0 +1,7 @@
+# Touchless PC Control — Dependencies
+# Install with: py -m pip install -r requirements.txt
+
+opencv-python>=4.8.0
+mediapipe>=1.0.0
+pyautogui>=0.9.54
+numpy>=1.24.0
