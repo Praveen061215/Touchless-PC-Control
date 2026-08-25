@@ -175,3 +175,5 @@ class HandDetector:
     def __del__(self):
         if hasattr(self, "landmarker"):
             self.landmarker.close()
+
+# Module version 1.0.0
