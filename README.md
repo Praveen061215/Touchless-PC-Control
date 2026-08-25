@@ -89,3 +89,7 @@ Open `VirtualMouse.py` and adjust these constants at the top:
 | `SWIPE_VEL` | `55` | Net px movement over 6 frames to register a swipe |
 | `SCROLL_VEL` | `22` | Net px movement over 6 frames to trigger scroll |
 | `frameR` | `80` | Size of the control zone margin |
+
+
+## Contact
+Created by Praveen. Feel free to reach out for any questions.
