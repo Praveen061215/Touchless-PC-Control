@@ -1,7 +1,7 @@
 """
 VirtualMouse.py
 ---------------
-Touchless PC Control — 13-gesture suite
+Touchless PC Control — Advanced Gesture Suite
 
   Gesture                   │  Action
   ──────────────────────────┼────────────────────────────────
@@ -13,18 +13,20 @@ Touchless PC Control — 13-gesture suite
   Open palm (still)         │  Pause / Resume toggle
   Open palm + swipe left    │  Previous  (Alt + ←)
   Open palm + swipe right   │  Next      (Alt + →)
+  Open palm + swipe down    │  Show Desktop (Win + D)
   Fist                      │  Emergency stop
   Thumb only                │  Confirm   (Enter)
-  Thumb + Pinky             │  Open App  (Win + R)
+  Thumb + Pinky (Shaka)     │  Brightness (move hand up/down)
   Index + fast swipe        │  Change Window (Alt + Tab)
-  Thumb+Index L-shape       │  Volume  (move hand up/down)
+  Thumb+Index L-shape       │  Volume (move hand up/down)
   Thumb+Index pinch/spread  │  Zoom In / Out (Ctrl +/-)
+  Index + Middle + Ring     │  Screenshot (Win + Shift + S)
 
   Press Q to quit.
 """
 
 import cv2
-import logging  # Built-in python logging
+import logging
 import math
 import time
 import numpy as np
@@ -32,6 +34,11 @@ import pyautogui
 from collections import deque
 import HandTrackingModule as htm
 
+# ── Advanced Controls ──
+import screen_brightness_control as sbc
+from ctypes import cast, POINTER
+from comtypes import CLSCTX_ALL
+from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
 # ═══════════════════════════════════════════════════════════════ CONFIGURATION ══
 wCam, hCam   = 640, 480         # Webcam resolution
@@ -70,12 +77,23 @@ wScr, hScr = pyautogui.size()
 print(f"[INFO] Screen {wScr}×{hScr}  |  Camera {wCam}×{hCam}")
 print("[INFO] Gesture control active. Press Q in the window to quit.")
 
+# ═════════════════════════════════════════════════════════ AUDIO & BRIGHTNESS ══
+try:
+    devices = AudioUtilities.GetSpeakers()
+    interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+    volume_ctrl = cast(interface, POINTER(IAudioEndpointVolume))
+    volRange = volume_ctrl.GetVolumeRange()
+    minVol, maxVol = volRange[0], volRange[1]
+except Exception as e:
+    logging.warning(f"Could not initialize PyCaw Audio: {e}")
+    volume_ctrl = None
+    minVol, maxVol = -65.25, 0.0
 
 # ══════════════════════════════════════════════════════════════════════ STATE ══
 plocX, plocY    = wScr / 2, hScr / 2
 pTime           = time.time()
 
-t_lclick = t_rclick = t_scroll = t_act = t_vol = t_zoom = 0.0
+t_lclick = t_rclick = t_scroll = t_act = t_vol = t_zoom = t_screenshot = 0.0
 
 paused          = False
 dragging        = False
@@ -90,6 +108,12 @@ CX = deque(maxlen=6)        # palm-center X ring buffer (velocity calculation)
 CY = deque(maxlen=6)        # palm-center Y ring buffer
 
 consecutive_fails = 0
+
+# HUD animation state
+hud_vol_bar = 0.0
+hud_brightness_bar = 0.0
+show_vol_frames = 0
+show_brightness_frames = 0
 
 
 # ══════════════════════════════════════════════════════════════════ HELPERS ══
@@ -132,6 +156,8 @@ def classify(fingers, lm, vx, vy):
 
     # 2. Open palm (all five fingers up)
     if nu == 5:
+        if abs(vy) > SWIPE_VEL and abs(vy) > abs(vx) and vy > 0:
+            return "PALM_D", pd
         if abs(vx) > SWIPE_VEL and abs(vx) > abs(vy):
             return ("PALM_R" if vx > 0 else "PALM_L"), pd
         return "OPEN_PALM", pd
@@ -140,15 +166,19 @@ def classify(fingers, lm, vx, vy):
     if f == [1, 0, 0, 0, 0]:
         return "THUMB_UP", pd
 
-    # 4. Thumb + Pinky (shaka) → open app
+    # 4. Thumb + Pinky (shaka) → brightness control
     if f == [1, 0, 0, 0, 1]:
-        return "THUMB_PINKY", pd
+        return "BRIGHTNESS", pd
 
-    # 5. Thumb + Index only → zoom (pinched) or volume (L-shape)
+    # 5. Index + Middle + Ring (3 fingers) → Screenshot
+    if not f[0] and f[1] and f[2] and f[3] and not f[4]:
+        return "SCREENSHOT", pd
+
+    # 6. Thumb + Index only → zoom (pinched) or volume (L-shape)
     if f[0] and f[1] and not f[2] and not f[3] and not f[4]:
         return ("ZOOM" if pd < PINCH_DIST else "VOLUME"), pd
 
-    # 6. Index + Middle (no thumb/ring/pinky) → scroll or right-click
+    # 7. Index + Middle (no thumb/ring/pinky) → scroll or right-click
     if not f[0] and f[1] and f[2] and not f[3] and not f[4]:
         if abs(vy) > SCROLL_VEL:
             return ("SCROLL_U" if vy < 0 else "SCROLL_D"), pd
@@ -182,8 +212,11 @@ _GC = {
     "Resumed":        (  0, 230,  80),
     "< Previous":     (  0, 210, 190),
     "Next >":         (  0, 210, 190),
+    "Show Desktop":   (  0, 210, 190),
     "Confirm":        (  0, 230,  80),
     "Open App":       (  0, 200, 255),
+    "Screenshot":     (255, 255, 255),
+    "Brightness":     (255, 200,   0),
     "Change Window":  (255, 210,   0),
     "Vol Up":         (  0, 180, 255),
     "Vol Down":       (  0, 180, 255),
@@ -194,7 +227,7 @@ _GC = {
 }
 
 
-def draw_hud(img, fps, label, fingers, is_paused):
+def draw_hud(img, fps, label, fingers, is_paused, rclick_progress=0.0, vol_bar=0.0, bright_bar=0.0, show_v=0, show_b=0, lm_idx8=None):
     h, w = img.shape[:2]
 
     # Bottom translucent status bar
@@ -242,6 +275,32 @@ def draw_hud(img, fps, label, fingers, is_paused):
         dy = cl if fy == frameR else -cl
         cv2.line(img, (fx, fy), (fx + dx, fy), (130, 0, 255), 2)
         cv2.line(img, (fx, fy), (fx, fy + dy), (130, 0, 255), 2)
+
+    # Circular progress for right-click hold
+    if rclick_progress > 0 and lm_idx8:
+        cx, cy = lm_idx8
+        angle = int(360 * rclick_progress)
+        cv2.ellipse(img, (cx, cy), (24, 24), -90, 0, angle, (220, 0, 255), 3)
+
+    # Sleek Volume Bar
+    if show_v > 0:
+        alpha = min(1.0, show_v / 15.0)
+        v_h = int(vol_bar * 200) # 0 to 200px
+        overlay = img.copy()
+        cv2.rectangle(overlay, (20, h // 2 - 100), (40, h // 2 + 100), (40, 40, 40), -1)
+        cv2.rectangle(overlay, (20, h // 2 + 100 - v_h), (40, h // 2 + 100), (0, 180, 255), -1)
+        cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
+        cv2.putText(img, f"{int(vol_bar*100)}%", (15, h // 2 + 125), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 180, 255), 1)
+
+    # Sleek Brightness Bar
+    if show_b > 0:
+        alpha = min(1.0, show_b / 15.0)
+        b_h = int(bright_bar * 200) # 0 to 200px
+        overlay = img.copy()
+        cv2.rectangle(overlay, (w - 40, h // 2 - 100), (w - 20, h // 2 + 100), (40, 40, 40), -1)
+        cv2.rectangle(overlay, (w - 40, h // 2 + 100 - b_h), (w - 20, h // 2 + 100), (255, 200, 0), -1)
+        cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
+        cv2.putText(img, f"{int(bright_bar*100)}%", (w - 50, h // 2 + 125), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1)
 
     return img
 
@@ -328,6 +387,13 @@ while True:
                     print("[INFO] Next > (Alt+Right)")
                 gesture_label = "Next >"
 
+            elif gesture == "PALM_D":
+                if last_gesture != "PALM_D" and can(t_act, ACT_COOL):
+                    pyautogui.hotkey('win', 'd')
+                    t_act = now
+                    print("[INFO] Show Desktop (Win+D)")
+                gesture_label = "Show Desktop"
+
             # ── THUMB UP — confirm (Enter) ───────────────────────────────────────
             elif gesture == "THUMB_UP":
                 if last_gesture != "THUMB_UP" and can(t_act, ACT_COOL):
@@ -336,13 +402,28 @@ while True:
                     print("[INFO] Confirm (Enter)")
                 gesture_label = "Confirm"
 
-            # ── THUMB + PINKY — open app (Win+R) ────────────────────────────────
-            elif gesture == "THUMB_PINKY":
-                if last_gesture != "THUMB_PINKY" and can(t_act, ACT_COOL):
-                    pyautogui.hotkey('win', 'r')
-                    t_act = now
-                    print("[INFO] Open App (Win+R)")
-                gesture_label = "Open App"
+            # ── THUMB + PINKY — Brightness Control ────────────────────────────────
+            elif gesture == "BRIGHTNESS":
+                rclick_frames = 0
+                show_brightness_frames = 30
+                try:
+                    # absolute Y mapping to brightness 0-100%
+                    # Y range roughly 50 to 400
+                    b_val = np.interp(lm[0][2], [100, 380], [100, 0])
+                    # smooth with EMA
+                    hud_brightness_bar = hud_brightness_bar * 0.8 + (b_val / 100.0) * 0.2
+                    sbc.set_brightness(int(hud_brightness_bar * 100))
+                    gesture_label = "Brightness"
+                except Exception as e:
+                    gesture_label = "Brightness (Err)"
+
+            # ── SCREENSHOT — 3 Fingers (Index + Middle + Ring) ────────────────────
+            elif gesture == "SCREENSHOT":
+                if last_gesture != "SCREENSHOT" and can(t_screenshot, ACT_COOL):
+                    pyautogui.hotkey('win', 'shift', 's')
+                    t_screenshot = now
+                    print("[INFO] Screenshot (Win+Shift+S)")
+                gesture_label = "Screenshot"
 
             # ── MOVE — cursor movement ───────────────────────────────────────────
             elif gesture == "MOVE":
@@ -421,20 +502,17 @@ while True:
             # ── VOLUME — thumb+index L-shape, move hand up/down ──────────────────
             elif gesture == "VOLUME":
                 rclick_frames = 0
-                if can(t_vol, VOL_COOL):
-                    dy = vel(CY)           # negative = hand moved up = louder
-                    if dy < -8:
-                        pyautogui.press('volumeup')
-                        t_vol = now
-                        gesture_label = "Vol Up"
-                    elif dy > 8:
-                        pyautogui.press('volumedown')
-                        t_vol = now
-                        gesture_label = "Vol Down"
-                    else:
-                        gesture_label = "Volume"
-                else:
+                show_vol_frames = 30
+                if volume_ctrl:
+                    # absolute Y mapping to volume
+                    v_val = np.interp(lm[8][2], [100, 380], [100, 0])
+                    hud_vol_bar = hud_vol_bar * 0.8 + (v_val / 100.0) * 0.2
+                    
+                    vol = np.interp(hud_vol_bar * 100, [0, 100], [minVol, maxVol])
+                    volume_ctrl.SetMasterVolumeLevel(vol, None)
                     gesture_label = "Volume"
+                else:
+                    gesture_label = "Volume (Err)"
 
             # ── ZOOM — thumb+index pinch/spread → Ctrl+= / Ctrl+- ────────────────
             elif gesture == "ZOOM":
@@ -500,7 +578,15 @@ while True:
     fps   = 1.0 / max(cTime - pTime, 1e-6)
     pTime = cTime
 
-    img = draw_hud(img, fps, gesture_label, fingers, paused)
+    # decrement HUD counters
+    show_vol_frames = max(0, show_vol_frames - 1)
+    show_brightness_frames = max(0, show_brightness_frames - 1)
+
+    img = draw_hud(img, fps, gesture_label, fingers, paused,
+                   rclick_progress=(rclick_frames / RCLICK_HOLD) if rclick_frames > 0 else 0.0,
+                   vol_bar=hud_vol_bar, bright_bar=hud_brightness_bar,
+                   show_v=show_vol_frames, show_b=show_brightness_frames,
+                   lm_idx8=(lm[8][1], lm[8][2]) if hands else None)
     cv2.imshow("Touchless PC Control", img)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
