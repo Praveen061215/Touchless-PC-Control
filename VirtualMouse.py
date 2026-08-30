@@ -48,6 +48,14 @@ smoothening  = 7                 # Cursor smoothing (higher = smoother, slower)
 PINCH_DIST   = 42                # px  – thumb-tip to index-tip distance for pinch
 DRAG_MIN     = 16                # px  – hand must move this much after pinch to drag
 
+# ── Low-light enhancement ─────────────────────────────────────────────────────
+LOW_LIGHT_MODE   = True          # Set to False to disable
+BRIGHT_ALPHA     = 1.8           # Contrast multiplier (1.0 = none, try 1.5–2.5)
+BRIGHT_BETA      = 40            # Brightness offset (0 = none, try 30–60)
+CLAHE_CLIP       = 2.5           # CLAHE clip limit (higher = more enhancement)
+# Create CLAHE object once at startup
+_clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP, tileGridSize=(8, 8))
+
 CLICK_COOL   = 0.40              # s   – left-click cooldown
 RCLICK_COOL  = 0.60              # s   – right-click cooldown
 SCROLL_COOL  = 0.07              # s   – scroll event cooldown
@@ -71,7 +79,7 @@ cap.set(cv2.CAP_PROP_FPS, 30)
 if not cap.isOpened():
     raise RuntimeError("Cannot open webcam. Check camera connection.")
 
-detector   = htm.HandDetector(maxHands=1, detectionCon=0.8, trackCon=0.8)
+detector   = htm.HandDetector(maxHands=1, detectionCon=0.5, trackCon=0.5)
 wScr, hScr = pyautogui.size()
 
 print(f"[INFO] Screen {wScr}×{hScr}  |  Camera {wCam}×{hCam}")
@@ -319,6 +327,17 @@ while True:
     consecutive_fails = 0
 
     img        = cv2.flip(img, 1)
+
+    # ── Low-light image enhancement ───────────────────────────────────────────
+    if LOW_LIGHT_MODE:
+        # Boost overall brightness and contrast
+        img = cv2.convertScaleAbs(img, alpha=BRIGHT_ALPHA, beta=BRIGHT_BETA)
+        # Apply CLAHE on the luminance channel to enhance detail without washing out
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        l = _clahe.apply(l)
+        img = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+
     hands, img = detector.findHands(img, draw=True)
 
     fingers       = [0, 0, 0, 0, 0]
