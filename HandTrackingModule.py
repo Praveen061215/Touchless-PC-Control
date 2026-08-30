@@ -102,24 +102,28 @@ class HandDetector:
 
         return allHands, img
 
-    def fingersUp(self, myHand):
+    def fingersUp(self, myHand, margin=14):
         """
         Returns [thumb, index, middle, ring, pinky] as 1 (up) or 0 (down).
-        Correctly handles both Left and Right hands.
+        'margin' (px) is a hysteresis zone to prevent flickering on borderline poses.
+        A finger is UP only if its tip is clearly ABOVE the PIP joint by at least
+        'margin' pixels; avoiding false flips caused by bent-but-not-folded fingers.
         """
         lm = myHand["lmList"]
         hand_type = myHand["type"]
         fingers = []
 
-        # Thumb — compare x (lateral direction differs per hand)
+        # Thumb — lateral direction differs per hand, also use a margin
         if hand_type == "Right":
-            fingers.append(1 if lm[TIP_IDS[0]][1] < lm[TIP_IDS[0] - 1][1] else 0)
+            fingers.append(1 if lm[TIP_IDS[0]][1] < lm[TIP_IDS[0] - 1][1] - margin else 0)
         else:
-            fingers.append(1 if lm[TIP_IDS[0]][1] > lm[TIP_IDS[0] - 1][1] else 0)
+            fingers.append(1 if lm[TIP_IDS[0]][1] > lm[TIP_IDS[0] - 1][1] + margin else 0)
 
-        # Other 4 fingers — compare y (tip above knuckle = up)
+        # Other 4 fingers — tip Y must be clearly above PIP joint Y (smaller = higher)
         for i in range(1, 5):
-            fingers.append(1 if lm[TIP_IDS[i]][2] < lm[TIP_IDS[i] - 2][2] else 0)
+            tip_y = lm[TIP_IDS[i]][2]
+            pip_y = lm[TIP_IDS[i] - 2][2]
+            fingers.append(1 if tip_y < pip_y - margin else 0)
 
         return fingers
 

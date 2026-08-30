@@ -48,14 +48,6 @@ smoothening  = 7                 # Cursor smoothing (higher = smoother, slower)
 PINCH_DIST   = 42                # px  – thumb-tip to index-tip distance for pinch
 DRAG_MIN     = 16                # px  – hand must move this much after pinch to drag
 
-# ── Low-light enhancement ─────────────────────────────────────────────────────
-LOW_LIGHT_MODE   = True          # Set to False to disable
-BRIGHT_ALPHA     = 1.8           # Contrast multiplier (1.0 = none, try 1.5–2.5)
-BRIGHT_BETA      = 40            # Brightness offset (0 = none, try 30–60)
-CLAHE_CLIP       = 2.5           # CLAHE clip limit (higher = more enhancement)
-# Create CLAHE object once at startup
-_clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP, tileGridSize=(8, 8))
-
 CLICK_COOL   = 0.40              # s   – left-click cooldown
 RCLICK_COOL  = 0.60              # s   – right-click cooldown
 SCROLL_COOL  = 0.07              # s   – scroll event cooldown
@@ -79,7 +71,7 @@ cap.set(cv2.CAP_PROP_FPS, 30)
 if not cap.isOpened():
     raise RuntimeError("Cannot open webcam. Check camera connection.")
 
-detector   = htm.HandDetector(maxHands=1, detectionCon=0.5, trackCon=0.5)
+detector   = htm.HandDetector(maxHands=1, detectionCon=0.65, trackCon=0.65)
 wScr, hScr = pyautogui.size()
 
 print(f"[INFO] Screen {wScr}×{hScr}  |  Camera {wCam}×{hCam}")
@@ -112,8 +104,13 @@ rclick_frames   = 0         # two-finger hold counter before right-click fires
 last_gesture    = None
 gesture_label   = "Idle"
 
-CX = deque(maxlen=6)        # palm-center X ring buffer (velocity calculation)
-CY = deque(maxlen=6)        # palm-center Y ring buffer
+CX = deque(maxlen=10)       # palm-center X ring buffer (velocity calculation)
+CY = deque(maxlen=10)       # palm-center Y ring buffer
+
+# ── Gesture stability: require N consistent frames before accepting ────────────
+GESTURE_STABLE_N = 4        # frames a gesture must persist before being used
+_gesture_buf     = deque(maxlen=GESTURE_STABLE_N)
+_stable_gesture  = "IDLE"   # last accepted stable gesture
 
 consecutive_fails = 0
 
@@ -147,6 +144,33 @@ def smooth_pos(x1, y1):
     cx = plocX + (sx - plocX) / smoothening
     cy = plocY + (sy - plocY) / smoothening
     return max(0.0, min(wScr - 1, cx)), max(0.0, min(hScr - 1, cy))
+
+
+def stabilize_gesture(raw):
+    """
+    Push 'raw' into the gesture buffer and return the majority-vote winner.
+    This prevents single-frame noise from triggering actions.
+    """
+    global _stable_gesture
+    _gesture_buf.append(raw)
+    if len(_gesture_buf) < GESTURE_STABLE_N:
+        return _stable_gesture          # not enough data yet — hold last stable
+    counts = {}
+    for g in _gesture_buf:
+        counts[g] = counts.get(g, 0) + 1
+    winner = max(counts, key=counts.get)
+    _stable_gesture = winner
+    return winner
+
+
+def adaptive_pinch_dist(hand):
+    """
+    Scale the pinch threshold proportionally to the hand bounding-box width
+    so it works at any camera distance (hand far away = smaller px distance).
+    """
+    _, _, bw, _ = hand["bbox"]
+    # Typical hand width in frame: ~120-220 px; PINCH_DIST was tuned for ~160 px
+    return max(28, min(65, PINCH_DIST * bw / 160))
 
 
 def classify(fingers, lm, vx, vy):
@@ -327,17 +351,6 @@ while True:
     consecutive_fails = 0
 
     img        = cv2.flip(img, 1)
-
-    # ── Low-light image enhancement ───────────────────────────────────────────
-    if LOW_LIGHT_MODE:
-        # Boost overall brightness and contrast
-        img = cv2.convertScaleAbs(img, alpha=BRIGHT_ALPHA, beta=BRIGHT_BETA)
-        # Apply CLAHE on the luminance channel to enhance detail without washing out
-        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
-        l = _clahe.apply(l)
-        img = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
-
     hands, img = detector.findHands(img, draw=True)
 
     fingers       = [0, 0, 0, 0, 0]
@@ -356,8 +369,10 @@ while True:
         vx = vel(CX)        # palm horizontal velocity
         vy = vel(CY)        # palm vertical velocity
 
-        fingers         = detector.fingersUp(hand)
-        gesture, pd     = classify(fingers, lm, vx, vy)
+        fingers     = detector.fingersUp(hand)
+        raw_gesture, pd = classify(fingers, lm, vx, vy)
+        gesture     = stabilize_gesture(raw_gesture)  # noise-filtered gesture
+        pd          = adaptive_pinch_dist(hand)        # hand-size aware threshold
 
         # ── Release drag when gesture moves away from PINCH ─────────────────────
         was_dragging = dragging
@@ -591,6 +606,7 @@ while True:
         last_gesture    = None
         CX.clear()
         CY.clear()
+        _gesture_buf.clear()        # reset stability buffer — no stale gestures
 
     # ── FPS & Display ──────────────────────────────────────────────────────────
     cTime = time.time()
