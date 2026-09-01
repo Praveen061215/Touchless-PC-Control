@@ -40,24 +40,28 @@ from ctypes import cast, POINTER
 from comtypes import CLSCTX_ALL
 from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
+from config import AppConfig
+
 # ═══════════════════════════════════════════════════════════════ CONFIGURATION ══
-wCam, hCam   = 640, 480         # Webcam resolution
-frameR       = 80                # Control-zone margin (px)
-smoothening  = 7                 # Cursor smoothing (higher = smoother, slower)
+app_config   = AppConfig.load("config.json")
 
-PINCH_DIST   = 42                # px  – thumb-tip to index-tip distance for pinch
-DRAG_MIN     = 16                # px  – hand must move this much after pinch to drag
+wCam, hCam   = app_config.camera.width, app_config.camera.height
+frameR       = app_config.gesture.control_margin
+smoothening  = app_config.gesture.smoothening
 
-CLICK_COOL   = 0.40              # s   – left-click cooldown
-RCLICK_COOL  = 0.60              # s   – right-click cooldown
-SCROLL_COOL  = 0.07              # s   – scroll event cooldown
-ACT_COOL     = 0.80              # s   – one-shot action cooldown
-VOL_COOL     = 0.14              # s   – volume key repeat rate
-ZOOM_COOL    = 0.10              # s   – zoom step interval
+PINCH_DIST   = app_config.gesture.pinch_distance
+DRAG_MIN     = app_config.gesture.drag_min_distance
 
-SWIPE_VEL    = 55                # px net – palm/index swipe threshold
-SCROLL_VEL   = 22                # px net – vertical motion to trigger scroll
-RCLICK_HOLD  = 6                 # frames – stable hold before right-click fires
+CLICK_COOL   = app_config.gesture.click_cooldown
+RCLICK_COOL  = app_config.gesture.rclick_cooldown
+SCROLL_COOL  = app_config.gesture.scroll_cooldown
+ACT_COOL     = app_config.gesture.action_cooldown
+VOL_COOL     = app_config.gesture.volume_cooldown
+ZOOM_COOL    = app_config.gesture.zoom_cooldown
+
+SWIPE_VEL    = app_config.gesture.swipe_velocity_threshold
+SCROLL_VEL   = app_config.gesture.scroll_velocity_threshold
+RCLICK_HOLD  = app_config.gesture.rclick_hold_frames
 
 pyautogui.FAILSAFE = False
 pyautogui.PAUSE    = 0

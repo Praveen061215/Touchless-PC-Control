@@ -1,0 +1,39 @@
+{
+    "camera": {
+        "device_index": 0,
+        "width": 640,
+        "height": 480,
+        "fps": 30,
+        "flip_horizontal": true
+    },
+    "gesture": {
+        "control_margin": 80,
+        "filter_type": "one-euro",
+        "smoothening": 7.0,
+        "one_euro_min_cutoff": 1.0,
+        "one_euro_beta": 0.007,
+        "one_euro_d_cutoff": 1.0,
+        "pinch_distance": 42,
+        "drag_min_distance": 16,
+        "gesture_stability_frames": 4,
+        "rclick_hold_frames": 6,
+        "click_cooldown": 0.40,
+        "rclick_cooldown": 0.60,
+        "scroll_cooldown": 0.07,
+        "action_cooldown": 0.80,
+        "volume_cooldown": 0.14,
+        "zoom_cooldown": 0.10,
+        "swipe_velocity_threshold": 55.0,
+        "scroll_velocity_threshold": 22.0
+    },
+    "ui": {
+        "show_hud": true,
+        "show_bounding_box": true,
+        "show_landmarks": true,
+        "low_light_mode": false,
+        "low_light_alpha": 1.8,
+        "low_light_beta": 40,
+        "low_light_clahe_clip": 2.5,
+        "sound_feedback": false
+    }
+}
