@@ -34,13 +34,8 @@ import pyautogui
 from collections import deque
 import HandTrackingModule as htm
 
-# ── Advanced Controls ──
-import screen_brightness_control as sbc
-from ctypes import cast, POINTER
-from comtypes import CLSCTX_ALL
-from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-
 from config import AppConfig
+from system_control import AudioController, BrightnessController
 
 # ═══════════════════════════════════════════════════════════════ CONFIGURATION ══
 app_config   = AppConfig.load("config.json")
@@ -82,16 +77,8 @@ print(f"[INFO] Screen {wScr}×{hScr}  |  Camera {wCam}×{hCam}")
 print("[INFO] Gesture control active. Press Q in the window to quit.")
 
 # ═════════════════════════════════════════════════════════ AUDIO & BRIGHTNESS ══
-try:
-    devices = AudioUtilities.GetSpeakers()
-    interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-    volume_ctrl = cast(interface, POINTER(IAudioEndpointVolume))
-    volRange = volume_ctrl.GetVolumeRange()
-    minVol, maxVol = volRange[0], volRange[1]
-except Exception as e:
-    logging.warning(f"Could not initialize PyCaw Audio: {e}")
-    volume_ctrl = None
-    minVol, maxVol = -65.25, 0.0
+audio_ctrl      = AudioController()
+brightness_ctrl = BrightnessController()
 
 # ══════════════════════════════════════════════════════════════════════ STATE ══
 plocX, plocY    = wScr / 2, hScr / 2
@@ -444,16 +431,13 @@ while True:
             elif gesture == "BRIGHTNESS":
                 rclick_frames = 0
                 show_brightness_frames = 30
-                try:
-                    # absolute Y mapping to brightness 0-100%
-                    # Y range roughly 50 to 400
+                if brightness_ctrl.available:
                     b_val = np.interp(lm[0][2], [100, 380], [100, 0])
-                    # smooth with EMA
                     hud_brightness_bar = hud_brightness_bar * 0.8 + (b_val / 100.0) * 0.2
-                    sbc.set_brightness(int(hud_brightness_bar * 100))
+                    brightness_ctrl.set_brightness(int(hud_brightness_bar * 100))
                     gesture_label = "Brightness"
-                except Exception as e:
-                    gesture_label = "Brightness (Err)"
+                else:
+                    gesture_label = "Brightness (N/A)"
 
             # ── SCREENSHOT — 3 Fingers (Index + Middle + Ring) ────────────────────
             elif gesture == "SCREENSHOT":
@@ -541,16 +525,13 @@ while True:
             elif gesture == "VOLUME":
                 rclick_frames = 0
                 show_vol_frames = 30
-                if volume_ctrl:
-                    # absolute Y mapping to volume
+                if audio_ctrl.available:
                     v_val = np.interp(lm[8][2], [100, 380], [100, 0])
                     hud_vol_bar = hud_vol_bar * 0.8 + (v_val / 100.0) * 0.2
-                    
-                    vol = np.interp(hud_vol_bar * 100, [0, 100], [minVol, maxVol])
-                    volume_ctrl.SetMasterVolumeLevel(vol, None)
+                    audio_ctrl.set_volume_scalar(hud_vol_bar)
                     gesture_label = "Volume"
                 else:
-                    gesture_label = "Volume (Err)"
+                    gesture_label = "Volume (N/A)"
 
             # ── ZOOM — thumb+index pinch/spread → Ctrl+= / Ctrl+- ────────────────
             elif gesture == "ZOOM":
