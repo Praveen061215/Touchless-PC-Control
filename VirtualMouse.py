@@ -36,6 +36,7 @@ import HandTrackingModule as htm
 
 from config import AppConfig
 from system_control import AudioController, BrightnessController
+from filters import PointFilter2D
 
 # ═══════════════════════════════════════════════════════════════ CONFIGURATION ══
 app_config   = AppConfig.load("config.json")
@@ -123,6 +124,15 @@ def vel(buf):
     return (buf[-1] - buf[0]) if len(buf) >= 2 else 0.0
 
 
+cursor_filter = PointFilter2D(
+    filter_type=app_config.gesture.filter_type,
+    smoothening=app_config.gesture.smoothening,
+    min_cutoff=app_config.gesture.one_euro_min_cutoff,
+    beta=app_config.gesture.one_euro_beta,
+    d_cutoff=app_config.gesture.one_euro_d_cutoff,
+    freq=float(app_config.camera.fps)
+)
+
 def can(t_last, cd):
     return time.time() - t_last > cd
 
@@ -132,8 +142,8 @@ def smooth_pos(x1, y1):
     global plocX, plocY
     sx = np.interp(x1, (frameR, wCam - frameR), (0, wScr))
     sy = np.interp(y1, (frameR, hCam - frameR), (0, hScr))
-    cx = plocX + (sx - plocX) / smoothening
-    cy = plocY + (sy - plocY) / smoothening
+    cx, cy = cursor_filter.filter(sx, sy, timestamp=time.time())
+    plocX, plocY = cx, cy
     return max(0.0, min(wScr - 1, cx)), max(0.0, min(hScr - 1, cy))
 
 
@@ -592,6 +602,7 @@ while True:
         CX.clear()
         CY.clear()
         _gesture_buf.clear()        # reset stability buffer — no stale gestures
+        cursor_filter.reset()       # reset smoothing filter on hand exit
 
     # ── FPS & Display ──────────────────────────────────────────────────────────
     cTime = time.time()
