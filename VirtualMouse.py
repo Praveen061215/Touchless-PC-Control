@@ -37,6 +37,7 @@ import HandTrackingModule as htm
 from config import AppConfig
 from system_control import AudioController, BrightnessController
 from filters import PointFilter2D
+from gestures import classify_gesture, GestureStabilizer, calculate_adaptive_pinch_dist
 
 # ═══════════════════════════════════════════════════════════════ CONFIGURATION ══
 app_config   = AppConfig.load("config.json")
@@ -99,10 +100,8 @@ gesture_label   = "Idle"
 CX = deque(maxlen=10)       # palm-center X ring buffer (velocity calculation)
 CY = deque(maxlen=10)       # palm-center Y ring buffer
 
-# ── Gesture stability: require N consistent frames before accepting ────────────
-GESTURE_STABLE_N = 4        # frames a gesture must persist before being used
-_gesture_buf     = deque(maxlen=GESTURE_STABLE_N)
-_stable_gesture  = "IDLE"   # last accepted stable gesture
+# ── Gesture stability stabilizer ──────────────────────────────────────────────
+gesture_stabilizer = GestureStabilizer(window_size=app_config.gesture.gesture_stability_frames)
 
 consecutive_fails = 0
 
@@ -147,85 +146,7 @@ def smooth_pos(x1, y1):
     return max(0.0, min(wScr - 1, cx)), max(0.0, min(hScr - 1, cy))
 
 
-def stabilize_gesture(raw):
-    """
-    Push 'raw' into the gesture buffer and return the majority-vote winner.
-    This prevents single-frame noise from triggering actions.
-    """
-    global _stable_gesture
-    _gesture_buf.append(raw)
-    if len(_gesture_buf) < GESTURE_STABLE_N:
-        return _stable_gesture          # not enough data yet — hold last stable
-    counts = {}
-    for g in _gesture_buf:
-        counts[g] = counts.get(g, 0) + 1
-    winner = max(counts, key=counts.get)
-    _stable_gesture = winner
-    return winner
 
-
-def adaptive_pinch_dist(hand):
-    """
-    Scale the pinch threshold proportionally to the hand bounding-box width
-    so it works at any camera distance (hand far away = smaller px distance).
-    """
-    _, _, bw, _ = hand["bbox"]
-    # Typical hand width in frame: ~120-220 px; PINCH_DIST was tuned for ~160 px
-    return max(28, min(65, PINCH_DIST * bw / 160))
-
-
-def classify(fingers, lm, vx, vy):
-    """
-    Classify current hand pose → (gesture_name, pinch_distance).
-    Rules are evaluated in priority order to avoid ambiguity.
-    """
-    f  = fingers
-    pd = ldist(lm, 4, 8)       # thumb-tip ↔ index-tip distance
-    nu = sum(f)
-
-    # 1. Fist (all fingers down)
-    if nu == 0:
-        return "FIST", pd
-
-    # 2. Open palm (all five fingers up)
-    if nu == 5:
-        if abs(vy) > SWIPE_VEL and abs(vy) > abs(vx) and vy > 0:
-            return "PALM_D", pd
-        if abs(vx) > SWIPE_VEL and abs(vx) > abs(vy):
-            return ("PALM_R" if vx > 0 else "PALM_L"), pd
-        return "OPEN_PALM", pd
-
-    # 3. Thumb only → confirm
-    if f == [1, 0, 0, 0, 0]:
-        return "THUMB_UP", pd
-
-    # 4. Thumb + Pinky (shaka) → brightness control
-    if f == [1, 0, 0, 0, 1]:
-        return "BRIGHTNESS", pd
-
-    # 5. Index + Middle + Ring (3 fingers) → Screenshot
-    if not f[0] and f[1] and f[2] and f[3] and not f[4]:
-        return "SCREENSHOT", pd
-
-    # 6. Thumb + Index only → zoom (pinched) or volume (L-shape)
-    if f[0] and f[1] and not f[2] and not f[3] and not f[4]:
-        return ("ZOOM" if pd < PINCH_DIST else "VOLUME"), pd
-
-    # 7. Index + Middle (no thumb/ring/pinky) → scroll or right-click
-    if not f[0] and f[1] and f[2] and not f[3] and not f[4]:
-        if abs(vy) > SCROLL_VEL:
-            return ("SCROLL_U" if vy < 0 else "SCROLL_D"), pd
-        return "RCLICK", pd
-
-    # 7. Index up (thumb irrelevant) → move, swipe, or pinch
-    if f[1] and not f[2] and not f[3] and not f[4]:
-        if pd < PINCH_DIST:
-            return "PINCH", pd
-        if abs(vx) > SWIPE_VEL and abs(vx) > abs(vy):
-            return ("SWIPE_R" if vx > 0 else "SWIPE_L"), pd
-        return "MOVE", pd
-
-    return "IDLE", pd
 
 
 # ─── Gesture → HUD colour map ─────────────────────────────────────────────────
@@ -371,9 +292,14 @@ while True:
         vy = vel(CY)        # palm vertical velocity
 
         fingers     = detector.fingersUp(hand)
-        raw_gesture, pd = classify(fingers, lm, vx, vy)
-        gesture     = stabilize_gesture(raw_gesture)  # noise-filtered gesture
-        pd          = adaptive_pinch_dist(hand)        # hand-size aware threshold
+        raw_gesture, _ = classify_gesture(
+            fingers, lm, vx, vy,
+            pinch_dist=PINCH_DIST,
+            swipe_vel=SWIPE_VEL,
+            scroll_vel=SCROLL_VEL
+        )
+        gesture     = gesture_stabilizer.update(raw_gesture)
+        pd          = calculate_adaptive_pinch_dist(hand["bbox"], base_dist=PINCH_DIST)
 
         # ── Release drag when gesture moves away from PINCH ─────────────────────
         was_dragging = dragging
@@ -601,7 +527,7 @@ while True:
         last_gesture    = None
         CX.clear()
         CY.clear()
-        _gesture_buf.clear()        # reset stability buffer — no stale gestures
+        gesture_stabilizer.reset()  # reset stability buffer — no stale gestures
         cursor_filter.reset()       # reset smoothing filter on hand exit
 
     # ── FPS & Display ──────────────────────────────────────────────────────────
