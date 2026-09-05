@@ -38,6 +38,7 @@ from config import AppConfig
 from system_control import AudioController, BrightnessController
 from filters import PointFilter2D
 from gestures import classify_gesture, GestureStabilizer, calculate_adaptive_pinch_dist
+from vision_utils import LowLightEnhancer
 
 # ═══════════════════════════════════════════════════════════════ CONFIGURATION ══
 app_config   = AppConfig.load("config.json")
@@ -81,6 +82,12 @@ print("[INFO] Gesture control active. Press Q in the window to quit.")
 # ═════════════════════════════════════════════════════════ AUDIO & BRIGHTNESS ══
 audio_ctrl      = AudioController()
 brightness_ctrl = BrightnessController()
+enhancer        = LowLightEnhancer(
+    enabled=app_config.ui.low_light_mode,
+    alpha=app_config.ui.low_light_alpha,
+    beta=app_config.ui.low_light_beta,
+    clahe_clip=app_config.ui.low_light_clahe_clip
+)
 
 # ══════════════════════════════════════════════════════════════════════ STATE ══
 plocX, plocY    = wScr / 2, hScr / 2
@@ -181,7 +188,7 @@ _GC = {
 }
 
 
-def draw_hud(img, fps, label, fingers, is_paused, rclick_progress=0.0, vol_bar=0.0, bright_bar=0.0, show_v=0, show_b=0, lm_idx8=None):
+def draw_hud(img, fps, label, fingers, is_paused, rclick_progress=0.0, vol_bar=0.0, bright_bar=0.0, show_v=0, show_b=0, lm_idx8=None, is_low_light=False):
     h, w = img.shape[:2]
 
     # Bottom translucent status bar
@@ -220,6 +227,10 @@ def draw_hud(img, fps, label, fingers, is_paused, rclick_progress=0.0, vol_bar=0
     # Title (top-left)
     cv2.putText(img, "Touchless PC Control", (12, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.72, (255, 255, 255), 2, cv2.LINE_AA)
+
+    if is_low_light:
+        cv2.putText(img, "[LOW-LIGHT: ON]", (w - 180, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 230, 255), 1, cv2.LINE_AA)
 
     # Control-zone corner accents
     cl = 22
@@ -273,6 +284,7 @@ while True:
     consecutive_fails = 0
 
     img        = cv2.flip(img, 1)
+    img        = enhancer.enhance(img)
     hands, img = detector.findHands(img, draw=True)
 
     fingers       = [0, 0, 0, 0, 0]
@@ -543,10 +555,15 @@ while True:
                    rclick_progress=(rclick_frames / RCLICK_HOLD) if rclick_frames > 0 else 0.0,
                    vol_bar=hud_vol_bar, bright_bar=hud_brightness_bar,
                    show_v=show_vol_frames, show_b=show_brightness_frames,
-                   lm_idx8=(lm[8][1], lm[8][2]) if hands else None)
+                   lm_idx8=(lm[8][1], lm[8][2]) if hands else None,
+                   is_low_light=enhancer.enabled)
     cv2.imshow("Touchless PC Control", img)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
         break
+    elif key == ord('l'):
+        new_state = enhancer.toggle()
+        print(f"[INFO] Low-light mode: {'ON' if new_state else 'OFF'}")
 
 # ── Cleanup ────────────────────────────────────────────────────────────────────
 if dragging:
