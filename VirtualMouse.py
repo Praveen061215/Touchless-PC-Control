@@ -39,6 +39,7 @@ from system_control import AudioController, BrightnessController
 from filters import PointFilter2D
 from gestures import classify_gesture, GestureStabilizer, calculate_adaptive_pinch_dist
 from vision_utils import LowLightEnhancer
+from feedback import FeedbackManager
 
 # ═══════════════════════════════════════════════════════════════ CONFIGURATION ══
 app_config   = AppConfig.load("config.json")
@@ -88,6 +89,7 @@ enhancer        = LowLightEnhancer(
     beta=app_config.ui.low_light_beta,
     clahe_clip=app_config.ui.low_light_clahe_clip
 )
+feedback        = FeedbackManager(sound_enabled=app_config.ui.sound_feedback)
 
 # ══════════════════════════════════════════════════════════════════════ STATE ══
 plocX, plocY    = wScr / 2, hScr / 2
@@ -324,6 +326,7 @@ while True:
             if not was_dragging and pinch_start_t is not None:
                 if (now - pinch_start_t) < 0.55 and can(t_lclick, CLICK_COOL):
                     pyautogui.click()
+                    feedback.trigger_click(int(lm[8][1]), int(lm[8][2]), is_right=False)
                     t_lclick = now
                     print("[INFO] Left Click")
             pinch_start_t   = None
@@ -445,6 +448,7 @@ while True:
                 rclick_frames += 1
                 if rclick_frames >= RCLICK_HOLD and can(t_rclick, RCLICK_COOL):
                     pyautogui.rightClick()
+                    feedback.trigger_click(int(lm[8][1]), int(lm[8][2]), is_right=True)
                     t_rclick      = now
                     rclick_frames = 0
                     print("[INFO] Right Click")
@@ -551,6 +555,9 @@ while True:
     show_vol_frames = max(0, show_vol_frames - 1)
     show_brightness_frames = max(0, show_brightness_frames - 1)
 
+    # Render click feedback ripples
+    img = feedback.update_and_draw(img)
+
     img = draw_hud(img, fps, gesture_label, fingers, paused,
                    rclick_progress=(rclick_frames / RCLICK_HOLD) if rclick_frames > 0 else 0.0,
                    vol_bar=hud_vol_bar, bright_bar=hud_brightness_bar,
@@ -564,6 +571,9 @@ while True:
     elif key == ord('l'):
         new_state = enhancer.toggle()
         print(f"[INFO] Low-light mode: {'ON' if new_state else 'OFF'}")
+    elif key == ord('s'):
+        feedback.sound_enabled = not feedback.sound_enabled
+        print(f"[INFO] Sound feedback: {'ON' if feedback.sound_enabled else 'OFF'}")
 
 # ── Cleanup ────────────────────────────────────────────────────────────────────
 if dragging:
