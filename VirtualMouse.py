@@ -41,8 +41,27 @@ from gestures import classify_gesture, GestureStabilizer, calculate_adaptive_pin
 from vision_utils import LowLightEnhancer
 from feedback import FeedbackManager
 
+import sys
+from cli import parse_arguments, run_diagnostics
+
+args = parse_arguments()
+if args.diagnostics:
+    sys.exit(run_diagnostics())
+
 # ═══════════════════════════════════════════════════════════════ CONFIGURATION ══
-app_config   = AppConfig.load("config.json")
+app_config   = AppConfig.load(args.config)
+if args.camera is not None:
+    app_config.camera.device_index = args.camera
+if args.width is not None:
+    app_config.camera.width = args.width
+if args.height is not None:
+    app_config.camera.height = args.height
+if args.filter is not None:
+    app_config.gesture.filter_type = args.filter
+if args.no_hud:
+    app_config.ui.show_hud = False
+if args.debug:
+    logging.basicConfig(level=logging.DEBUG)
 
 wCam, hCam   = app_config.camera.width, app_config.camera.height
 frameR       = app_config.gesture.control_margin
@@ -67,7 +86,7 @@ pyautogui.PAUSE    = 0
 
 
 # ═══════════════════════════════════════════════════════════ CAMERA & DETECTOR ══
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(app_config.camera.device_index)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH,  wCam)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, hCam)
 cap.set(cv2.CAP_PROP_FPS, 30)
@@ -558,22 +577,25 @@ while True:
     # Render click feedback ripples
     img = feedback.update_and_draw(img)
 
-    img = draw_hud(img, fps, gesture_label, fingers, paused,
-                   rclick_progress=(rclick_frames / RCLICK_HOLD) if rclick_frames > 0 else 0.0,
-                   vol_bar=hud_vol_bar, bright_bar=hud_brightness_bar,
-                   show_v=show_vol_frames, show_b=show_brightness_frames,
-                   lm_idx8=(lm[8][1], lm[8][2]) if hands else None,
-                   is_low_light=enhancer.enabled)
-    cv2.imshow("Touchless PC Control", img)
-    key = cv2.waitKey(1) & 0xFF
-    if key == ord('q'):
-        break
-    elif key == ord('l'):
-        new_state = enhancer.toggle()
-        print(f"[INFO] Low-light mode: {'ON' if new_state else 'OFF'}")
-    elif key == ord('s'):
-        feedback.sound_enabled = not feedback.sound_enabled
-        print(f"[INFO] Sound feedback: {'ON' if feedback.sound_enabled else 'OFF'}")
+    if app_config.ui.show_hud:
+        img = draw_hud(img, fps, gesture_label, fingers, paused,
+                       rclick_progress=(rclick_frames / RCLICK_HOLD) if rclick_frames > 0 else 0.0,
+                       vol_bar=hud_vol_bar, bright_bar=hud_brightness_bar,
+                       show_v=show_vol_frames, show_b=show_brightness_frames,
+                       lm_idx8=(lm[8][1], lm[8][2]) if hands else None,
+                       is_low_light=enhancer.enabled)
+        cv2.imshow("Touchless PC Control", img)
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            break
+        elif key == ord('l'):
+            new_state = enhancer.toggle()
+            print(f"[INFO] Low-light mode: {'ON' if new_state else 'OFF'}")
+        elif key == ord('s'):
+            feedback.sound_enabled = not feedback.sound_enabled
+            print(f"[INFO] Sound feedback: {'ON' if feedback.sound_enabled else 'OFF'}")
+    else:
+        time.sleep(0.001)
 
 # ── Cleanup ────────────────────────────────────────────────────────────────────
 if dragging:
