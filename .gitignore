@@ -23,3 +23,16 @@ wheels/
 .venv
 venv/
 ENV/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build and IDE artifacts
+*.egg-info/
+dist/
+build/
+.idea/
+.vscode/
+
