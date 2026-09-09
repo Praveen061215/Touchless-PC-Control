@@ -1,8 +1,19 @@
 # 🖐️ Touchless PC Control
 
-A Python-based virtual mouse that lets you control your PC using hand gestures. Features cursor movement, left/right clicks, dragging, scrolling, volume adjustment, and window shortcuts via your webcam using OpenCV and MediaPipe.
+A high-performance virtual mouse and computer control suite driven by real-time hand gestures. Control cursor navigation, left/right clicks, dragging, scrolling, audio volume, display brightness, and window shortcuts via your webcam using OpenCV and MediaPipe.
 
-Built with **Python**, **OpenCV**, **MediaPipe Tasks API (v1.0+)**, and **PyAutoGUI**.
+Built with **Python**, **OpenCV**, **MediaPipe Tasks API**, and **PyAutoGUI**.
+
+---
+
+## ✨ Key Features
+
+- 🎯 **Sub-Pixel Cursor Tracking**: Adaptive **1€ Filter** (Casiez et al., CHI 2012) dynamically eliminates hand tremors when stationary while delivering zero-lag responsiveness during fast sweeps.
+- 🖐️ **13+ Intuitive Gestures**: Move, left-click, drag-and-drop, right-click, scroll, screenshot, volume, brightness, window navigation, and emergency stop.
+- 🌙 **Low-Light CLAHE Boost**: Built-in luminance-channel contrast equalization ensures rock-solid tracking even in poorly lit environments (toggle on-the-fly with `L`).
+- 🔊 **Sensory Feedback**: Visual click ripple animations and asynchronous auditory feedback cues (toggle with `S`).
+- ⚙️ **Configurable & Scriptable**: Centralized `config.json` and a full CLI with hardware diagnostics (`--diagnostics`).
+- 🧪 **Comprehensive Test Suite**: Automated unit tests for gesture classification, filters, controllers, and configuration.
 
 ---
 
@@ -10,23 +21,29 @@ Built with **Python**, **OpenCV**, **MediaPipe Tasks API (v1.0+)**, and **PyAuto
 
 - Python 3.9+
 - A working webcam
-- Windows / macOS / Linux
+- Supported OS: Windows (full support including hardware volume & brightness), macOS / Linux (cursor and mouse navigation supported with graceful stubs)
 
-## ⚙️ Setup
+---
 
-**1. Install dependencies**
+## ⚙️ Quick Start
+
+**1. Clone the repository**
+```bash
+git clone https://github.com/Praveen061215/Touchless-PC-Control.git
+cd Touchless-PC-Control
+```
+
+**2. Install dependencies**
 ```bash
 py -m pip install -r requirements.txt
 ```
 
-**2. Download the hand landmark model** *(already included — `hand_landmarker.task`)*
-
-If you ever need to re-download it:
+**3. Run Hardware Diagnostics**
 ```bash
-py -c "import urllib.request; urllib.request.urlretrieve('https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', 'hand_landmarker.task'); print('Done')"
+py VirtualMouse.py --diagnostics
 ```
 
-**3. Run the virtual mouse**
+**4. Start the Virtual Mouse**
 ```bash
 py VirtualMouse.py
 ```
@@ -35,64 +52,113 @@ py VirtualMouse.py
 
 ## 🎮 Gesture Reference
 
-| Finger / Gesture | Action |
-|---|---|
-| ☝️ **Index finger only** | Move the mouse cursor |
-| 🤌 **Thumb pinch — still** | Left click |
-| ↕️ **Thumb pinch — move** | Drag |
-| ✌️ **Two fingers — hold still** | Right click |
-| ↕️ **Two fingers — move up/down** | Scroll |
-| 🤚 **Open palm — still** | Pause / Activate toggle |
-| 👈 **Open palm — swipe left** | Previous (Alt + ←) |
-| 👉 **Open palm — swipe right** | Next (Alt + →) |
-| ✊ **Fist** | Emergency stop |
-| 👍 **Thumb only** | Confirm (Enter) |
-| 🤙 **Thumb + Pinky (shaka)** | Open App (Win + R) |
-| ↔️ **Index — fast swipe** | Change Window (Alt + Tab) |
-| 🔊 **Thumb + Index L-shape** | Volume (move hand up/down) |
-| 🔍 **Thumb + Index pinch/spread** | Zoom In / Out (Ctrl +/-) |
-| **Q key** | Quit the program |
+| Gesture | Pose | Action |
+|---|---|---|
+| ☝️ **Move Cursor** | Index finger extended | Moves the system mouse pointer |
+| 🤌 **Left Click** | Thumb + Index pinch (< 0.55s) | Left mouse click |
+| ↕️ **Drag & Drop** | Thumb + Index pinch & move | Mouse drag; release pinch to drop |
+| ✌️ **Right Click** | Index + Middle fingers held still (~6 frames) | Right mouse click |
+| ↕️ **Scroll** | Index + Middle fingers moving vertically | Natural page scrolling |
+| 🤚 **Pause / Resume** | Open palm (5 fingers held still) | Toggle pause state |
+| 👈 **Previous** | Open palm + swipe left | Browser / App Back (`Alt + ←`) |
+| 👉 **Next** | Open palm + swipe right | Browser / App Forward (`Alt + →`) |
+| ⬇️ **Show Desktop** | Open palm + swipe down | Minimize all windows (`Win + D`) |
+| ✊ **Emergency Stop** | Closed fist | Immediate control freeze |
+| 👍 **Confirm** | Thumb extended only | Enter key press |
+| 🤙 **Brightness** | Thumb + Pinky extended (Shaka) | Move hand up / down to adjust screen brightness |
+| 🔊 **Volume Control** | Thumb + Index in L-shape | Move hand up / down to adjust system master volume |
+| 🔍 **Zoom In / Out** | Thumb + Index spread / close | Dynamic zoom (`Ctrl +` / `Ctrl -`) |
+| 📸 **Screenshot** | Index + Middle + Ring fingers extended | Screen snip shortcut (`Win + Shift + S`) |
+| ↔️ **App Switcher** | Index finger rapid horizontal swipe | Window switcher (`Alt + Tab`) |
 
-> **Tips**
-> - Keep your hand inside the **purple corner brackets** (control zone) for accurate cursor mapping.
-> - For **right-click**: hold two fingers still for ~6 frames before it fires (prevents accidental triggers while scrolling).
-> - For **drag**: pinch thumb+index and then move your hand. Release the pinch to drop.
-> - For **volume**: form an L-shape (thumb + index extended), then move hand **up** = louder, **down** = quieter.
-> - For **zoom**: pinch thumb+index close, then **spread** = zoom in, **close** = zoom out.
+### Keyboard Shortcuts
+
+- `Q`: Quit application cleanly
+- `L`: Toggle **Low-Light CLAHE Enhancement** mode
+- `S`: Toggle **Auditory Sound Feedback**
 
 ---
 
-## 📁 Project Structure
+## 💻 CLI Options
+
+```bash
+usage: VirtualMouse.py [-h] [--config CONFIG] [--camera CAMERA]
+                       [--width WIDTH] [--height HEIGHT]
+                       [--filter {one-euro,ema,none}] [--no-hud] [--debug]
+                       [--diagnostics]
+
+options:
+  -h, --help            Show help message and exit
+  --config CONFIG, -c   Path to custom JSON configuration file (default: config.json)
+  --camera CAMERA, -cam Webcam device index (e.g. 0, 1)
+  --width WIDTH         Override camera frame capture width (e.g. 1280)
+  --height HEIGHT       Override camera frame capture height (e.g. 720)
+  --filter FILTER       Smoothing filter algorithm: 'one-euro', 'ema', or 'none'
+  --no-hud              Headless mode: runs without displaying OpenCV preview window
+  --debug               Enable verbose debug logging
+  --diagnostics         Run hardware and environment probe and print diagnostic report
+```
+
+---
+
+## 📁 Project Architecture
 
 ```
 Touchless PC Control/
-├── HandTrackingModule.py   # MediaPipe Tasks wrapper (hand detection + gestures)
-├── VirtualMouse.py         # Main application — 13-gesture control suite
-├── hand_landmarker.task    # MediaPipe hand landmark model (binary)
-├── requirements.txt        # Python dependencies
-└── README.md               # This file
+├── .github/workflows/ci.yml # Automated multi-platform test runner
+├── config.py                # Dataclass settings loader & validator
+├── config.json              # User preferences & tunable parameters
+├── cli.py                   # Argument parsing & system diagnostics
+├── feedback.py              # Visual click ripples & asynchronous audio cues
+├── filters.py               # 1€ adaptive filter and 2D coordinate smoothing
+├── gestures.py              # Gesture rules, classification & stability buffer
+├── HandTrackingModule.py    # MediaPipe Tasks HandLandmarker wrapper
+├── pyproject.toml           # PEP 621 packaging metadata
+├── requirements.txt         # Production dependencies
+├── run_tests.py             # Test discovery and execution runner
+├── system_control.py        # Safe audio volume & display brightness controllers
+├── tests/                   # Automated unit test suite (28 test cases)
+│   ├── test_cli.py
+│   ├── test_config.py
+│   ├── test_feedback.py
+│   ├── test_filters.py
+│   ├── test_gestures.py
+│   ├── test_system_control.py
+│   └── test_vision.py
+├── vision_utils.py          # Adaptive low-light CLAHE luminance enhancer
+└── VirtualMouse.py          # Main application orchestrator & gesture HUD
 ```
 
 ---
 
-## 🔧 Tuning
+## 🧪 Running Tests
 
-Open `VirtualMouse.py` and adjust these constants at the top:
+Execute the full automated test suite with standard Python:
+```bash
+py run_tests.py
+```
+Or via `pytest`:
+```bash
+py -m pytest
+```
 
-| Variable | Default | Effect |
-|---|---|---|
-| `smoothening` | `7` | Higher = smoother but laggier mouse |
-| `PINCH_DIST` | `42` | px distance between thumb+index to detect pinch |
-| `DRAG_MIN` | `16` | px movement after pinch before drag activates |
-| `CLICK_COOL` | `0.40` | Seconds between consecutive left clicks |
-| `RCLICK_HOLD` | `6` | Frames two-fingers must be held before right click |
-| `SWIPE_VEL` | `55` | Net px movement over 6 frames to register a swipe |
-| `SCROLL_VEL` | `22` | Net px movement over 6 frames to trigger scroll |
-| `frameR` | `80` | Size of the control zone margin |
+---
 
+## 🔧 Tuning Configuration
 
-## Contact
-Created by Praveen. Feel free to reach out for any questions.
+All operational parameters can be adjusted in [`config.json`](config.json):
+- `gesture.filter_type`: Choose between `"one-euro"`, `"ema"`, or `"none"`.
+- `gesture.one_euro_min_cutoff` & `one_euro_beta`: Tune sensitivity to hand jitter vs high-speed tracking.
+- `gesture.gesture_stability_frames`: Majority-voting window size (default: 4 frames).
+- `ui.low_light_mode`: Enable automatic low-light enhancement at startup.
+- `ui.sound_feedback`: Enable audio clicks on gestures.
 
-## License
-This project is licensed under the MIT License.
+---
+
+## 👤 Author
+
+Created and maintained by **Praveen** ([@Praveen061215](https://github.com/Praveen061215)).
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).
