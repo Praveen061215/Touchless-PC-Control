@@ -9,10 +9,6 @@ import argparse
 import os
 import platform
 import sys
-import cv2
-import pyautogui
-from config import AppConfig
-from system_control import AudioController, BrightnessController
 
 
 def parse_arguments(args=None) -> argparse.Namespace:
@@ -52,6 +48,7 @@ def run_diagnostics() -> int:
 
     # 2. Screen Dimensions
     try:
+        import pyautogui
         w_scr, h_scr = pyautogui.size()
         print(f"[+] Display Screen  : {w_scr}x{h_scr} px")
     except Exception as e:
@@ -67,32 +64,44 @@ def run_diagnostics() -> int:
 
     # 4. Camera Probing
     print("\n[+] Probing Available Webcams...")
-    found_cameras = 0
-    for idx in range(3):
-        cap = cv2.VideoCapture(idx)
-        if cap.isOpened():
-            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = int(cap.get(cv2.CAP_PROP_FPS))
-            print(f"    - Camera Index {idx}: READY (Default: {w}x{h} @ {fps} FPS)")
-            cap.release()
-            found_cameras += 1
-        else:
-            print(f"    - Camera Index {idx}: Unavailable")
+    try:
+        import cv2
+        found_cameras = 0
+        for idx in range(3):
+            cap = cv2.VideoCapture(idx)
+            if cap.isOpened():
+                w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                fps = int(cap.get(cv2.CAP_PROP_FPS))
+                print(f"    - Camera Index {idx}: READY (Default: {w}x{h} @ {fps} FPS)")
+                cap.release()
+                found_cameras += 1
+            else:
+                print(f"    - Camera Index {idx}: Unavailable")
+    except Exception as e:
+        print(f"[-] Camera Probing  : Failed ({e})")
 
     # 5. Audio Interface
-    audio = AudioController()
-    if audio.available:
-        print(f"\n[+] Audio Control   : READY (PyCaw Master Volume)")
-    else:
-        print(f"\n[-] Audio Control   : FALLBACK (Direct volume control unavailable)")
+    try:
+        from system_control import AudioController
+        audio = AudioController()
+        if audio.available:
+            print("\n[+] Audio Control   : READY (PyCaw Master Volume)")
+        else:
+            print("\n[-] Audio Control   : FALLBACK (Direct volume control unavailable)")
+    except Exception as e:
+        print(f"\n[-] Audio Control   : Error ({e})")
 
     # 6. Brightness Interface
-    brightness = BrightnessController()
-    if brightness.available:
-        print(f"[+] Brightness Ctrl : READY ({brightness.get_brightness()}% current)")
-    else:
-        print(f"[-] Brightness Ctrl : FALLBACK (Hardware brightness unavailable)")
+    try:
+        from system_control import BrightnessController
+        brightness = BrightnessController()
+        if brightness.available:
+            print(f"[+] Brightness Ctrl : READY ({brightness.get_brightness()}% current)")
+        else:
+            print("[-] Brightness Ctrl : FALLBACK (Hardware brightness unavailable)")
+    except Exception as e:
+        print(f"[-] Brightness Ctrl : Error ({e})")
 
     print("\n" + "=" * 60)
     print(" Diagnostics completed successfully.")

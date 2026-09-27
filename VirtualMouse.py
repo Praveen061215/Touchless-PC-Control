@@ -22,160 +22,29 @@ Touchless PC Control — Advanced Gesture Suite
   Thumb+Index pinch/spread  │  Zoom In / Out (Ctrl +/-)
   Index + Middle + Ring     │  Screenshot (Win + Shift + S)
 
-  Press Q to quit.
+  Hotkeys:
+    Q: Quit program
+    L: Toggle low-light CLAHE enhancement
+    S: Toggle sound feedback beeps
 """
 
-import cv2
-import logging
 import math
+import sys
 import time
+import logging
+from collections import deque
+import cv2
 import numpy as np
 import pyautogui
-from collections import deque
-import HandTrackingModule as htm
 
+import HandTrackingModule as htm
 from config import AppConfig
 from system_control import AudioController, BrightnessController
 from filters import PointFilter2D
 from gestures import classify_gesture, GestureStabilizer, calculate_adaptive_pinch_dist
 from vision_utils import LowLightEnhancer
 from feedback import FeedbackManager
-
-import sys
 from cli import parse_arguments, run_diagnostics
-
-args = parse_arguments()
-if args.diagnostics:
-    sys.exit(run_diagnostics())
-
-# ═══════════════════════════════════════════════════════════════ CONFIGURATION ══
-app_config   = AppConfig.load(args.config)
-if args.camera is not None:
-    app_config.camera.device_index = args.camera
-if args.width is not None:
-    app_config.camera.width = args.width
-if args.height is not None:
-    app_config.camera.height = args.height
-if args.filter is not None:
-    app_config.gesture.filter_type = args.filter
-if args.no_hud:
-    app_config.ui.show_hud = False
-if args.debug:
-    logging.basicConfig(level=logging.DEBUG)
-
-wCam, hCam   = app_config.camera.width, app_config.camera.height
-frameR       = app_config.gesture.control_margin
-smoothening  = app_config.gesture.smoothening
-
-PINCH_DIST   = app_config.gesture.pinch_distance
-DRAG_MIN     = app_config.gesture.drag_min_distance
-
-CLICK_COOL   = app_config.gesture.click_cooldown
-RCLICK_COOL  = app_config.gesture.rclick_cooldown
-SCROLL_COOL  = app_config.gesture.scroll_cooldown
-ACT_COOL     = app_config.gesture.action_cooldown
-VOL_COOL     = app_config.gesture.volume_cooldown
-ZOOM_COOL    = app_config.gesture.zoom_cooldown
-
-SWIPE_VEL    = app_config.gesture.swipe_velocity_threshold
-SCROLL_VEL   = app_config.gesture.scroll_velocity_threshold
-RCLICK_HOLD  = app_config.gesture.rclick_hold_frames
-
-pyautogui.FAILSAFE = False
-pyautogui.PAUSE    = 0
-
-
-# ═══════════════════════════════════════════════════════════ CAMERA & DETECTOR ══
-cap = cv2.VideoCapture(app_config.camera.device_index)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH,  wCam)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, hCam)
-cap.set(cv2.CAP_PROP_FPS, 30)
-if not cap.isOpened():
-    raise RuntimeError("Cannot open webcam. Check camera connection.")
-
-detector   = htm.HandDetector(maxHands=1, detectionCon=0.65, trackCon=0.65)
-wScr, hScr = pyautogui.size()
-
-print(f"[INFO] Screen {wScr}×{hScr}  |  Camera {wCam}×{hCam}")
-print("[INFO] Gesture control active. Press Q in the window to quit.")
-
-# ═════════════════════════════════════════════════════════ AUDIO & BRIGHTNESS ══
-audio_ctrl      = AudioController()
-brightness_ctrl = BrightnessController()
-enhancer        = LowLightEnhancer(
-    enabled=app_config.ui.low_light_mode,
-    alpha=app_config.ui.low_light_alpha,
-    beta=app_config.ui.low_light_beta,
-    clahe_clip=app_config.ui.low_light_clahe_clip
-)
-feedback        = FeedbackManager(sound_enabled=app_config.ui.sound_feedback)
-
-# ══════════════════════════════════════════════════════════════════════ STATE ══
-plocX, plocY    = wScr / 2, hScr / 2
-pTime           = time.time()
-
-t_lclick = t_rclick = t_scroll = t_act = t_vol = t_zoom = t_screenshot = 0.0
-
-paused          = False
-dragging        = False
-pinch_start_t   = None
-pinch_start_pos = None
-prev_pinch_d    = None      # previous pinch distance (for zoom delta)
-rclick_frames   = 0         # two-finger hold counter before right-click fires
-last_gesture    = None
-gesture_label   = "Idle"
-
-CX = deque(maxlen=10)       # palm-center X ring buffer (velocity calculation)
-CY = deque(maxlen=10)       # palm-center Y ring buffer
-
-# ── Gesture stability stabilizer ──────────────────────────────────────────────
-gesture_stabilizer = GestureStabilizer(window_size=app_config.gesture.gesture_stability_frames)
-
-consecutive_fails = 0
-
-# HUD animation state
-hud_vol_bar = 0.0
-hud_brightness_bar = 0.0
-show_vol_frames = 0
-show_brightness_frames = 0
-
-
-# ══════════════════════════════════════════════════════════════════ HELPERS ══
-def ldist(lm, a, b):
-    """Euclidean pixel distance between two hand landmarks."""
-    return math.hypot(lm[a][1] - lm[b][1], lm[a][2] - lm[b][2])
-
-
-def vel(buf):
-    """Net displacement (newest − oldest) from a ring buffer."""
-    return (buf[-1] - buf[0]) if len(buf) >= 2 else 0.0
-
-
-cursor_filter = PointFilter2D(
-    filter_type=app_config.gesture.filter_type,
-    smoothening=app_config.gesture.smoothening,
-    min_cutoff=app_config.gesture.one_euro_min_cutoff,
-    beta=app_config.gesture.one_euro_beta,
-    d_cutoff=app_config.gesture.one_euro_d_cutoff,
-    freq=float(app_config.camera.fps)
-)
-
-def can(t_last, cd):
-    return time.time() - t_last > cd
-
-
-def smooth_pos(x1, y1):
-    """Map camera control-zone coordinate → smoothed screen coordinate."""
-    global plocX, plocY
-    sx = np.interp(x1, (frameR, wCam - frameR), (0, wScr))
-    sy = np.interp(y1, (frameR, hCam - frameR), (0, hScr))
-    cx, cy = cursor_filter.filter(sx, sy, timestamp=time.time())
-    plocX, plocY = cx, cy
-    return max(0.0, min(wScr - 1, cx)), max(0.0, min(hScr - 1, cy))
-
-
-
-
 
 # ─── Gesture → HUD colour map ─────────────────────────────────────────────────
 _GC = {
@@ -209,7 +78,23 @@ _GC = {
 }
 
 
-def draw_hud(img, fps, label, fingers, is_paused, rclick_progress=0.0, vol_bar=0.0, bright_bar=0.0, show_v=0, show_b=0, lm_idx8=None, is_low_light=False):
+def ldist(lm, a, b):
+    """Euclidean pixel distance between two hand landmarks."""
+    return math.hypot(lm[a][1] - lm[b][1], lm[a][2] - lm[b][2])
+
+
+def vel(buf):
+    """Net displacement (newest − oldest) from a ring buffer."""
+    return (buf[-1] - buf[0]) if len(buf) >= 2 else 0.0
+
+
+def can(t_last, cd):
+    return time.time() - t_last > cd
+
+
+def draw_hud(img, fps, label, fingers, is_paused, rclick_progress=0.0, vol_bar=0.0,
+             bright_bar=0.0, show_v=0, show_b=0, lm_idx8=None, is_low_light=False,
+             frameR=80, wCam=640, hCam=480):
     h, w = img.shape[:2]
 
     # Bottom translucent status bar
@@ -271,7 +156,7 @@ def draw_hud(img, fps, label, fingers, is_paused, rclick_progress=0.0, vol_bar=0
     # Sleek Volume Bar
     if show_v > 0:
         alpha = min(1.0, show_v / 15.0)
-        v_h = int(vol_bar * 200) # 0 to 200px
+        v_h = int(vol_bar * 200)
         overlay = img.copy()
         cv2.rectangle(overlay, (20, h // 2 - 100), (40, h // 2 + 100), (40, 40, 40), -1)
         cv2.rectangle(overlay, (20, h // 2 + 100 - v_h), (40, h // 2 + 100), (0, 180, 255), -1)
@@ -281,7 +166,7 @@ def draw_hud(img, fps, label, fingers, is_paused, rclick_progress=0.0, vol_bar=0
     # Sleek Brightness Bar
     if show_b > 0:
         alpha = min(1.0, show_b / 15.0)
-        b_h = int(bright_bar * 200) # 0 to 200px
+        b_h = int(bright_bar * 200)
         overlay = img.copy()
         cv2.rectangle(overlay, (w - 40, h // 2 - 100), (w - 20, h // 2 + 100), (40, 40, 40), -1)
         cv2.rectangle(overlay, (w - 40, h // 2 + 100 - b_h), (w - 20, h // 2 + 100), (255, 200, 0), -1)
@@ -291,317 +176,408 @@ def draw_hud(img, fps, label, fingers, is_paused, rclick_progress=0.0, vol_bar=0
     return img
 
 
-# ══════════════════════════════════════════════════════════════════ MAIN LOOP ══
-print("[INFO] Hold index finger up to move cursor. Open palm to pause.")
+def main(argv=None) -> int:
+    """Main application loop."""
+    args = parse_arguments(argv)
+    if args.diagnostics:
+        return run_diagnostics()
 
-while True:
-    ok, img = cap.read()
-    if not ok:
-        consecutive_fails += 1
-        if consecutive_fails > 15:
-            print("[ERROR] Webcam feed lost. Exiting.")
-            break
-        continue
+    # ═══════════════════════════════════════════════════════════ CONFIGURATION ══
+    app_config = AppConfig.load(args.config)
+    if args.camera is not None:
+        app_config.camera.device_index = args.camera
+    if args.width is not None:
+        app_config.camera.width = args.width
+    if args.height is not None:
+        app_config.camera.height = args.height
+    if args.filter is not None:
+        app_config.gesture.filter_type = args.filter
+    if args.no_hud:
+        app_config.ui.show_hud = False
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG)
+
+    wCam, hCam   = app_config.camera.width, app_config.camera.height
+    frameR       = app_config.gesture.control_margin
+    smoothening  = app_config.gesture.smoothening
+
+    PINCH_DIST   = app_config.gesture.pinch_distance
+    DRAG_MIN     = app_config.gesture.drag_min_distance
+
+    CLICK_COOL   = app_config.gesture.click_cooldown
+    RCLICK_COOL  = app_config.gesture.rclick_cooldown
+    SCROLL_COOL  = app_config.gesture.scroll_cooldown
+    ACT_COOL     = app_config.gesture.action_cooldown
+    VOL_COOL     = app_config.gesture.volume_cooldown
+    ZOOM_COOL    = app_config.gesture.zoom_cooldown
+
+    SWIPE_VEL    = app_config.gesture.swipe_velocity_threshold
+    SCROLL_VEL   = app_config.gesture.scroll_velocity_threshold
+    RCLICK_HOLD  = app_config.gesture.rclick_hold_frames
+
+    pyautogui.FAILSAFE = False
+    pyautogui.PAUSE    = 0
+
+    # ═══════════════════════════════════════════════════════ CAMERA & DETECTOR ══
+    cap = cv2.VideoCapture(app_config.camera.device_index)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  wCam)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, hCam)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+    if not cap.isOpened():
+        print(f"[ERROR] Cannot open webcam (device index {app_config.camera.device_index}).")
+        print("[HINT] Run `py VirtualMouse.py --diagnostics` to check available cameras, or pass `--camera <index>`.")
+        return 1
+
+    detector   = htm.HandDetector(maxHands=1, detectionCon=0.65, trackCon=0.65)
+    wScr, hScr = pyautogui.size()
+
+    print(f"[INFO] Screen {wScr}×{hScr}  |  Camera {wCam}×{hCam}")
+    print("[INFO] Gesture control active. Press Q in the window to quit.")
+
+    # ═════════════════════════════════════════════════════ AUDIO & BRIGHTNESS ══
+    audio_ctrl      = AudioController()
+    brightness_ctrl = BrightnessController()
+    enhancer        = LowLightEnhancer(
+        enabled=app_config.ui.low_light_mode,
+        alpha=app_config.ui.low_light_alpha,
+        beta=app_config.ui.low_light_beta,
+        clahe_clip=app_config.ui.low_light_clahe_clip
+    )
+    feedback        = FeedbackManager(sound_enabled=app_config.ui.sound_feedback)
+
+    # ══════════════════════════════════════════════════════════════════ STATE ══
+    plocX, plocY    = wScr / 2, hScr / 2
+    pTime           = time.time()
+
+    t_lclick = t_rclick = t_scroll = t_act = t_vol = t_zoom = t_screenshot = 0.0
+
+    paused          = False
+    dragging        = False
+    pinch_start_t   = None
+    pinch_start_pos = None
+    prev_pinch_d    = None
+    rclick_frames   = 0
+    last_gesture    = None
+    gesture_label   = "Idle"
+
+    CX = deque(maxlen=10)
+    CY = deque(maxlen=10)
+
+    gesture_stabilizer = GestureStabilizer(window_size=app_config.gesture.gesture_stability_frames)
     consecutive_fails = 0
 
-    img        = cv2.flip(img, 1)
-    img        = enhancer.enhance(img)
-    hands, img = detector.findHands(img, draw=True)
+    hud_vol_bar = 0.0
+    hud_brightness_bar = 0.0
+    show_vol_frames = 0
+    show_brightness_frames = 0
 
-    fingers       = [0, 0, 0, 0, 0]
-    gesture       = "IDLE"
-    gesture_label = "Paused" if paused else "Idle"
-    now           = time.time()
-    pd            = 0.0
+    cursor_filter = PointFilter2D(
+        filter_type=app_config.gesture.filter_type,
+        smoothening=app_config.gesture.smoothening,
+        min_cutoff=app_config.gesture.one_euro_min_cutoff,
+        beta=app_config.gesture.one_euro_beta,
+        d_cutoff=app_config.gesture.one_euro_d_cutoff,
+        freq=float(app_config.camera.fps)
+    )
 
-    if hands:
-        hand   = hands[0]
-        lm     = hand["lmList"]
-        cx, cy = hand["center"]
+    def smooth_pos(x1, y1):
+        nonlocal plocX, plocY
+        sx = np.interp(x1, (frameR, wCam - frameR), (0, wScr))
+        sy = np.interp(y1, (frameR, hCam - frameR), (0, hScr))
+        cx, cy = cursor_filter.filter(sx, sy, timestamp=time.time())
+        plocX, plocY = cx, cy
+        return max(0.0, min(wScr - 1, cx)), max(0.0, min(hScr - 1, cy))
 
-        CX.append(cx)
-        CY.append(cy)
-        vx = vel(CX)        # palm horizontal velocity
-        vy = vel(CY)        # palm vertical velocity
+    # ══════════════════════════════════════════════════════════════ MAIN LOOP ══
+    print("[INFO] Hold index finger up to move cursor. Open palm to pause.")
 
-        fingers     = detector.fingersUp(hand)
-        raw_gesture, _ = classify_gesture(
-            fingers, lm, vx, vy,
-            pinch_dist=PINCH_DIST,
-            swipe_vel=SWIPE_VEL,
-            scroll_vel=SCROLL_VEL
-        )
-        gesture     = gesture_stabilizer.update(raw_gesture)
-        pd          = calculate_adaptive_pinch_dist(hand["bbox"], base_dist=PINCH_DIST)
+    while True:
+        ok, img = cap.read()
+        if not ok:
+            consecutive_fails += 1
+            if consecutive_fails > 15:
+                print("[ERROR] Webcam feed lost. Exiting.")
+                break
+            continue
+        consecutive_fails = 0
 
-        # ── Release drag when gesture moves away from PINCH ─────────────────────
-        was_dragging = dragging
-        if dragging and gesture != "PINCH":
-            pyautogui.mouseUp()
-            dragging = False
+        img        = cv2.flip(img, 1)
+        img        = enhancer.enhance(img)
+        hands, img = detector.findHands(img, draw=True)
 
-        # ── Trigger click when PINCH ends without having dragged ────────────────
-        if last_gesture == "PINCH" and gesture != "PINCH":
-            if not was_dragging and pinch_start_t is not None:
-                if (now - pinch_start_t) < 0.55 and can(t_lclick, CLICK_COOL):
-                    pyautogui.click()
-                    feedback.trigger_click(int(lm[8][1]), int(lm[8][2]), is_right=False)
-                    t_lclick = now
-                    print("[INFO] Left Click")
-            pinch_start_t   = None
-            pinch_start_pos = None
+        fingers       = [0, 0, 0, 0, 0]
+        gesture       = "IDLE"
+        gesture_label = "Paused" if paused else "Idle"
+        now           = time.time()
+        pd            = 0.0
 
-        # ═══════════════════════════ GESTURE DISPATCH ═══════════════════════════
-        if not paused:
+        if hands:
+            hand   = hands[0]
+            lm     = hand["lmList"]
+            cx, cy = hand["center"]
 
-            # ── FIST — emergency stop ────────────────────────────────────────────
-            if gesture == "FIST":
-                rclick_frames = 0
-                gesture_label = "STOP"
+            CX.append(cx)
+            CY.append(cy)
+            vx = vel(CX)
+            vy = vel(CY)
 
-            # ── OPEN PALM — toggle pause ─────────────────────────────────────────
-            elif gesture == "OPEN_PALM":
-                if last_gesture != "OPEN_PALM" and can(t_act, ACT_COOL):
-                    paused = True
-                    t_act  = now
-                    print("[INFO] PAUSED")
-                gesture_label = "Pause"
+            fingers     = detector.fingersUp(hand)
+            raw_gesture, _ = classify_gesture(
+                fingers, lm, vx, vy,
+                pinch_dist=PINCH_DIST,
+                swipe_vel=SWIPE_VEL,
+                scroll_vel=SCROLL_VEL
+            )
+            gesture     = gesture_stabilizer.update(raw_gesture)
+            pd          = calculate_adaptive_pinch_dist(hand["bbox"], base_dist=PINCH_DIST)
 
-            # ── PALM NAV — Alt+Left / Alt+Right (prev/next) ──────────────────────
-            elif gesture == "PALM_L":
-                if last_gesture != "PALM_L" and can(t_act, ACT_COOL):
-                    pyautogui.hotkey('alt', 'left')
-                    t_act = now
-                    print("[INFO] < Previous (Alt+Left)")
-                gesture_label = "< Previous"
+            # ── Release drag when gesture moves away from PINCH ─────────────────
+            was_dragging = dragging
+            if dragging and gesture != "PINCH":
+                pyautogui.mouseUp()
+                dragging = False
 
-            elif gesture == "PALM_R":
-                if last_gesture != "PALM_R" and can(t_act, ACT_COOL):
-                    pyautogui.hotkey('alt', 'right')
-                    t_act = now
-                    print("[INFO] Next > (Alt+Right)")
-                gesture_label = "Next >"
+            # ── Trigger click when PINCH ends without having dragged ────────────
+            if last_gesture == "PINCH" and gesture != "PINCH":
+                if not was_dragging and pinch_start_t is not None:
+                    if (now - pinch_start_t) < 0.55 and can(t_lclick, CLICK_COOL):
+                        pyautogui.click()
+                        feedback.trigger_click(int(lm[8][1]), int(lm[8][2]), is_right=False)
+                        t_lclick = now
+                        print("[INFO] Left Click")
+                pinch_start_t   = None
+                pinch_start_pos = None
 
-            elif gesture == "PALM_D":
-                if last_gesture != "PALM_D" and can(t_act, ACT_COOL):
-                    pyautogui.hotkey('win', 'd')
-                    t_act = now
-                    print("[INFO] Show Desktop (Win+D)")
-                gesture_label = "Show Desktop"
-
-            # ── THUMB UP — confirm (Enter) ───────────────────────────────────────
-            elif gesture == "THUMB_UP":
-                if last_gesture != "THUMB_UP" and can(t_act, ACT_COOL):
-                    pyautogui.press('enter')
-                    t_act = now
-                    print("[INFO] Confirm (Enter)")
-                gesture_label = "Confirm"
-
-            # ── THUMB + PINKY — Brightness Control ────────────────────────────────
-            elif gesture == "BRIGHTNESS":
-                rclick_frames = 0
-                show_brightness_frames = 30
-                if brightness_ctrl.available:
-                    b_val = np.interp(lm[0][2], [100, 380], [100, 0])
-                    hud_brightness_bar = hud_brightness_bar * 0.8 + (b_val / 100.0) * 0.2
-                    brightness_ctrl.set_brightness(int(hud_brightness_bar * 100))
-                    gesture_label = "Brightness"
-                else:
-                    gesture_label = "Brightness (N/A)"
-
-            # ── SCREENSHOT — 3 Fingers (Index + Middle + Ring) ────────────────────
-            elif gesture == "SCREENSHOT":
-                if last_gesture != "SCREENSHOT" and can(t_screenshot, ACT_COOL):
-                    pyautogui.hotkey('win', 'shift', 's')
-                    t_screenshot = now
-                    print("[INFO] Screenshot (Win+Shift+S)")
-                gesture_label = "Screenshot"
-
-            # ── MOVE — cursor movement ───────────────────────────────────────────
-            elif gesture == "MOVE":
-                rclick_frames = 0
-                sx, sy = smooth_pos(lm[8][1], lm[8][2])
-                pyautogui.moveTo(sx, sy)
-                plocX, plocY = sx, sy
-                cv2.circle(img, (lm[8][1], lm[8][2]), 14, (255, 200, 0), cv2.FILLED)
-                gesture_label = "Move"
-
-            # ── SWIPE — change window (Alt+Tab) ──────────────────────────────────
-            elif gesture in ("SWIPE_L", "SWIPE_R"):
-                if last_gesture not in ("SWIPE_L", "SWIPE_R") and can(t_act, ACT_COOL):
-                    pyautogui.hotkey('alt', 'tab')
-                    t_act = now
-                    print("[INFO] Change Window (Alt+Tab)")
-                gesture_label = "Change Window"
-
-            # ── PINCH — left click or drag ───────────────────────────────────────
-            elif gesture == "PINCH":
-                rclick_frames = 0
-                sx, sy = smooth_pos(lm[8][1], lm[8][2])
-
-                if pinch_start_t is None:
-                    pinch_start_t   = now
-                    pinch_start_pos = (sx, sy)
-
-                moved = math.hypot(sx - pinch_start_pos[0], sy - pinch_start_pos[1])
-
-                if not dragging and moved > DRAG_MIN:
-                    pyautogui.mouseDown()
-                    dragging = True
-
-                if dragging:
-                    pyautogui.moveTo(sx, sy)
-                    gesture_label = "Drag"
-                else:
-                    # Visual: midpoint circle between thumb and index
-                    mx = (lm[4][1] + lm[8][1]) // 2
-                    my = (lm[4][2] + lm[8][2]) // 2
-                    cv2.circle(img, (lm[8][1], lm[8][2]), 14, (0, 200, 255), cv2.FILLED)
-                    cv2.circle(img, (mx, my), 8, (0, 255, 200), cv2.FILLED)
-                    gesture_label = "Pinching..."
-
-                plocX, plocY = sx, sy
-
-            # ── RCLICK — hold two fingers to right-click ──────────────────────────
-            elif gesture == "RCLICK":
-                rclick_frames += 1
-                if rclick_frames >= RCLICK_HOLD and can(t_rclick, RCLICK_COOL):
-                    pyautogui.rightClick()
-                    feedback.trigger_click(int(lm[8][1]), int(lm[8][2]), is_right=True)
-                    t_rclick      = now
+            # ═══════════════════════ GESTURE DISPATCH ═══════════════════════════
+            if not paused:
+                if gesture == "FIST":
                     rclick_frames = 0
-                    print("[INFO] Right Click")
-                gesture_label = ("Right Click"
-                                 if rclick_frames >= RCLICK_HOLD // 2
-                                 else "Two Fingers")
+                    gesture_label = "STOP"
 
-            # ── SCROLL UP / DOWN ─────────────────────────────────────────────────
-            elif gesture == "SCROLL_U":
-                rclick_frames = 0
-                if can(t_scroll, SCROLL_COOL):
-                    amt = max(1, min(5, int(abs(vy) / 10)))
-                    pyautogui.scroll(amt)
-                    t_scroll = now
-                gesture_label = "Scroll Up"
+                elif gesture == "OPEN_PALM":
+                    if last_gesture != "OPEN_PALM" and can(t_act, ACT_COOL):
+                        paused = True
+                        t_act  = now
+                        print("[INFO] PAUSED")
+                    gesture_label = "Pause"
 
-            elif gesture == "SCROLL_D":
-                rclick_frames = 0
-                if can(t_scroll, SCROLL_COOL):
-                    amt = max(1, min(5, int(abs(vy) / 10)))
-                    pyautogui.scroll(-amt)
-                    t_scroll = now
-                gesture_label = "Scroll Down"
+                elif gesture == "PALM_L":
+                    if last_gesture != "PALM_L" and can(t_act, ACT_COOL):
+                        pyautogui.hotkey('alt', 'left')
+                        t_act = now
+                        print("[INFO] < Previous (Alt+Left)")
+                    gesture_label = "< Previous"
 
-            # ── VOLUME — thumb+index L-shape, move hand up/down ──────────────────
-            elif gesture == "VOLUME":
-                rclick_frames = 0
-                show_vol_frames = 30
-                if audio_ctrl.available:
-                    v_val = np.interp(lm[8][2], [100, 380], [100, 0])
-                    hud_vol_bar = hud_vol_bar * 0.8 + (v_val / 100.0) * 0.2
-                    audio_ctrl.set_volume_scalar(hud_vol_bar)
-                    gesture_label = "Volume"
-                else:
-                    gesture_label = "Volume (N/A)"
+                elif gesture == "PALM_R":
+                    if last_gesture != "PALM_R" and can(t_act, ACT_COOL):
+                        pyautogui.hotkey('alt', 'right')
+                        t_act = now
+                        print("[INFO] Next > (Alt+Right)")
+                    gesture_label = "Next >"
 
-            # ── ZOOM — thumb+index pinch/spread → Ctrl+= / Ctrl+- ────────────────
-            elif gesture == "ZOOM":
-                rclick_frames = 0
-                if prev_pinch_d is not None and can(t_zoom, ZOOM_COOL):
-                    delta = pd - prev_pinch_d
-                    if delta > 5:               # fingers spreading → zoom in
-                        pyautogui.hotkey('ctrl', '=')
-                        t_zoom = now
-                        gesture_label = "Zoom In"
-                    elif delta < -5:            # fingers closing → zoom out
-                        pyautogui.hotkey('ctrl', '-')
-                        t_zoom = now
-                        gesture_label = "Zoom Out"
+                elif gesture == "PALM_D":
+                    if last_gesture != "PALM_D" and can(t_act, ACT_COOL):
+                        pyautogui.hotkey('win', 'd')
+                        t_act = now
+                        print("[INFO] Show Desktop (Win+D)")
+                    gesture_label = "Show Desktop"
+
+                elif gesture == "THUMB_UP":
+                    if last_gesture != "THUMB_UP" and can(t_act, ACT_COOL):
+                        pyautogui.press('enter')
+                        t_act = now
+                        print("[INFO] Confirm (Enter)")
+                    gesture_label = "Confirm"
+
+                elif gesture == "BRIGHTNESS":
+                    rclick_frames = 0
+                    show_brightness_frames = 30
+                    if brightness_ctrl.available:
+                        b_val = np.interp(lm[0][2], [100, 380], [100, 0])
+                        hud_brightness_bar = hud_brightness_bar * 0.8 + (b_val / 100.0) * 0.2
+                        brightness_ctrl.set_brightness(int(hud_brightness_bar * 100))
+                        gesture_label = "Brightness"
+                    else:
+                        gesture_label = "Brightness (N/A)"
+
+                elif gesture == "SCREENSHOT":
+                    if last_gesture != "SCREENSHOT" and can(t_screenshot, ACT_COOL):
+                        pyautogui.hotkey('win', 'shift', 's')
+                        t_screenshot = now
+                        print("[INFO] Screenshot (Win+Shift+S)")
+                    gesture_label = "Screenshot"
+
+                elif gesture == "MOVE":
+                    rclick_frames = 0
+                    sx, sy = smooth_pos(lm[8][1], lm[8][2])
+                    pyautogui.moveTo(sx, sy)
+                    cv2.circle(img, (lm[8][1], lm[8][2]), 14, (255, 200, 0), cv2.FILLED)
+                    gesture_label = "Move"
+
+                elif gesture in ("SWIPE_L", "SWIPE_R"):
+                    if last_gesture not in ("SWIPE_L", "SWIPE_R") and can(t_act, ACT_COOL):
+                        pyautogui.hotkey('alt', 'tab')
+                        t_act = now
+                        print("[INFO] Change Window (Alt+Tab)")
+                    gesture_label = "Change Window"
+
+                elif gesture == "PINCH":
+                    rclick_frames = 0
+                    sx, sy = smooth_pos(lm[8][1], lm[8][2])
+
+                    if pinch_start_t is None:
+                        pinch_start_t   = now
+                        pinch_start_pos = (sx, sy)
+
+                    moved = math.hypot(sx - pinch_start_pos[0], sy - pinch_start_pos[1])
+
+                    if not dragging and moved > DRAG_MIN:
+                        pyautogui.mouseDown()
+                        dragging = True
+
+                    if dragging:
+                        pyautogui.moveTo(sx, sy)
+                        gesture_label = "Drag"
+                    else:
+                        mx = (lm[4][1] + lm[8][1]) // 2
+                        my = (lm[4][2] + lm[8][2]) // 2
+                        cv2.circle(img, (lm[8][1], lm[8][2]), 14, (0, 200, 255), cv2.FILLED)
+                        cv2.circle(img, (mx, my), 8, (0, 255, 200), cv2.FILLED)
+                        gesture_label = "Pinching..."
+
+                elif gesture == "RCLICK":
+                    rclick_frames += 1
+                    if rclick_frames >= RCLICK_HOLD and can(t_rclick, RCLICK_COOL):
+                        pyautogui.rightClick()
+                        feedback.trigger_click(int(lm[8][1]), int(lm[8][2]), is_right=True)
+                        t_rclick      = now
+                        rclick_frames = 0
+                        print("[INFO] Right Click")
+                    gesture_label = ("Right Click"
+                                     if rclick_frames >= RCLICK_HOLD // 2
+                                     else "Two Fingers")
+
+                elif gesture == "SCROLL_U":
+                    rclick_frames = 0
+                    if can(t_scroll, SCROLL_COOL):
+                        amt = max(1, min(5, int(abs(vy) / 10)))
+                        pyautogui.scroll(amt)
+                        t_scroll = now
+                    gesture_label = "Scroll Up"
+
+                elif gesture == "SCROLL_D":
+                    rclick_frames = 0
+                    if can(t_scroll, SCROLL_COOL):
+                        amt = max(1, min(5, int(abs(vy) / 10)))
+                        pyautogui.scroll(-amt)
+                        t_scroll = now
+                    gesture_label = "Scroll Down"
+
+                elif gesture == "VOLUME":
+                    rclick_frames = 0
+                    show_vol_frames = 30
+                    if audio_ctrl.available:
+                        v_val = np.interp(lm[8][2], [100, 380], [100, 0])
+                        hud_vol_bar = hud_vol_bar * 0.8 + (v_val / 100.0) * 0.2
+                        audio_ctrl.set_volume_scalar(hud_vol_bar)
+                        gesture_label = "Volume"
+                    else:
+                        gesture_label = "Volume (N/A)"
+
+                elif gesture == "ZOOM":
+                    rclick_frames = 0
+                    if prev_pinch_d is not None and can(t_zoom, ZOOM_COOL):
+                        delta = pd - prev_pinch_d
+                        if delta > 5:
+                            pyautogui.hotkey('ctrl', '=')
+                            t_zoom = now
+                            gesture_label = "Zoom In"
+                        elif delta < -5:
+                            pyautogui.hotkey('ctrl', '-')
+                            t_zoom = now
+                            gesture_label = "Zoom Out"
+                        else:
+                            gesture_label = "Zoom"
                     else:
                         gesture_label = "Zoom"
+                    prev_pinch_d = pd
+
                 else:
-                    gesture_label = "Zoom"
-                prev_pinch_d = pd
+                    rclick_frames = 0
+
+                if gesture != "ZOOM":
+                    prev_pinch_d = None
 
             else:
-                rclick_frames = 0
+                if (gesture == "OPEN_PALM"
+                        and last_gesture != "OPEN_PALM"
+                        and can(t_act, ACT_COOL)):
+                    paused = False
+                    t_act  = now
+                    print("[INFO] RESUMED")
+                    gesture_label = "Resumed"
+                else:
+                    gesture_label = "Paused"
 
-            # Reset zoom accumulator when not in ZOOM mode
-            if gesture != "ZOOM":
-                prev_pinch_d = None
+            last_gesture = gesture
 
         else:
-            # ─── PAUSED — only OPEN_PALM toggles resume ───────────────────────────
-            if (gesture == "OPEN_PALM"
-                    and last_gesture != "OPEN_PALM"
-                    and can(t_act, ACT_COOL)):
-                paused = False
-                t_act  = now
-                print("[INFO] RESUMED")
-                gesture_label = "Resumed"
-            else:
-                gesture_label = "Paused"
+            if dragging:
+                pyautogui.mouseUp()
+                dragging      = False
+                pinch_start_t = None
+            elif pinch_start_t is not None and (now - pinch_start_t) < 0.55:
+                if can(t_lclick, CLICK_COOL):
+                    pyautogui.click()
+                    t_lclick = now
+                    print("[INFO] Left Click (pinch release)")
 
-        last_gesture = gesture
+            pinch_start_t   = None
+            pinch_start_pos = None
+            rclick_frames   = 0
+            last_gesture    = None
+            CX.clear()
+            CY.clear()
+            gesture_stabilizer.reset()
+            cursor_filter.reset()
 
-    else:
-        # ── No hand in frame ──────────────────────────────────────────────────────
-        if dragging:
-            pyautogui.mouseUp()
-            dragging      = False
-            pinch_start_t = None          # suppress accidental click on release
-        elif pinch_start_t is not None and (now - pinch_start_t) < 0.55:
-            if can(t_lclick, CLICK_COOL):
-                pyautogui.click()
-                t_lclick = now
-                print("[INFO] Left Click (pinch release)")
+        cTime = time.time()
+        fps   = 1.0 / max(cTime - pTime, 1e-6)
+        pTime = cTime
 
-        pinch_start_t   = None
-        pinch_start_pos = None
-        rclick_frames   = 0
-        last_gesture    = None
-        CX.clear()
-        CY.clear()
-        gesture_stabilizer.reset()  # reset stability buffer — no stale gestures
-        cursor_filter.reset()       # reset smoothing filter on hand exit
+        show_vol_frames = max(0, show_vol_frames - 1)
+        show_brightness_frames = max(0, show_brightness_frames - 1)
 
-    # ── FPS & Display ──────────────────────────────────────────────────────────
-    cTime = time.time()
-    fps   = 1.0 / max(cTime - pTime, 1e-6)
-    pTime = cTime
+        img = feedback.update_and_draw(img)
 
-    # decrement HUD counters
-    show_vol_frames = max(0, show_vol_frames - 1)
-    show_brightness_frames = max(0, show_brightness_frames - 1)
+        if app_config.ui.show_hud:
+            img = draw_hud(img, fps, gesture_label, fingers, paused,
+                           rclick_progress=(rclick_frames / RCLICK_HOLD) if rclick_frames > 0 else 0.0,
+                           vol_bar=hud_vol_bar, bright_bar=hud_brightness_bar,
+                           show_v=show_vol_frames, show_b=show_brightness_frames,
+                           lm_idx8=(lm[8][1], lm[8][2]) if hands else None,
+                           is_low_light=enhancer.enabled,
+                           frameR=frameR, wCam=wCam, hCam=hCam)
+            cv2.imshow("Touchless PC Control", img)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == ord('l'):
+                new_state = enhancer.toggle()
+                print(f"[INFO] Low-light mode: {'ON' if new_state else 'OFF'}")
+            elif key == ord('s'):
+                feedback.sound_enabled = not feedback.sound_enabled
+                print(f"[INFO] Sound feedback: {'ON' if feedback.sound_enabled else 'OFF'}")
+        else:
+            time.sleep(0.001)
 
-    # Render click feedback ripples
-    img = feedback.update_and_draw(img)
+    if dragging:
+        pyautogui.mouseUp()
+    cap.release()
+    cv2.destroyAllWindows()
+    print("[INFO] Virtual Mouse stopped.")
+    return 0
 
-    if app_config.ui.show_hud:
-        img = draw_hud(img, fps, gesture_label, fingers, paused,
-                       rclick_progress=(rclick_frames / RCLICK_HOLD) if rclick_frames > 0 else 0.0,
-                       vol_bar=hud_vol_bar, bright_bar=hud_brightness_bar,
-                       show_v=show_vol_frames, show_b=show_brightness_frames,
-                       lm_idx8=(lm[8][1], lm[8][2]) if hands else None,
-                       is_low_light=enhancer.enabled)
-        cv2.imshow("Touchless PC Control", img)
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord('l'):
-            new_state = enhancer.toggle()
-            print(f"[INFO] Low-light mode: {'ON' if new_state else 'OFF'}")
-        elif key == ord('s'):
-            feedback.sound_enabled = not feedback.sound_enabled
-            print(f"[INFO] Sound feedback: {'ON' if feedback.sound_enabled else 'OFF'}")
-    else:
-        time.sleep(0.001)
 
-# ── Cleanup ────────────────────────────────────────────────────────────────────
-if dragging:
-    pyautogui.mouseUp()
-cap.release()
-cv2.destroyAllWindows()
-print("[INFO] Virtual Mouse stopped.")
-
-# End of script
+if __name__ == "__main__":
+    sys.exit(main())
